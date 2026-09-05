@@ -1,0 +1,26 @@
+# SentinelAI backend — development and test tooling.
+#
+#   pip install -r requirements.txt -r requirements-dev.txt
+#
+# Never installed into the production image.
+
+-r requirements.txt
+
+# --- Test runner -----------------------------------------------------------
+pytest>=8.3,<9.0
+pytest-asyncio>=0.24,<1.0
+pytest-cov>=5.0,<7.0
+
+# --- Test doubles ----------------------------------------------------------
+# respx intercepts httpx at the transport layer, so upstream provider calls can
+# be asserted against without touching the network. The previous test suite hit
+# live APIs, which made it slow, flaky and dependent on someone else's uptime.
+respx>=0.21,<0.23
+# Exercises the real Redis code path for cache and rate limiting instead of
+# only ever testing the in-memory fallback.
+fakeredis>=2.24,<3.0
+
+# --- Lint, format, type check ---------------------------------------------
+# ruff replaces black + isort + flake8 (all three were previously listed).
+ruff>=0.6,<1.0
+mypy>=1.11,<2.0

@@ -1,0 +1,43 @@
+# Everything the build does not need. Keeps the context small (a `node_modules`
+# in the context is minutes of upload) and, more importantly, keeps secrets and
+# local state out of the image even if a later COPY gets sloppy.
+
+# --- Secrets. The first entries here are the load-bearing ones. -------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# --- Version control and CI -------------------------------------------------
+.git
+.gitignore
+.github
+.gitattributes
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# --- Tests and tooling. Not shipped: the runtime image has no test runner. ---
+tests/
+requirements-dev.txt
+
+# --- Local scratch ----------------------------------------------------------
+*.log
+*.db
+*.sqlite3
+.DS_Store
+.idea/
+.vscode/

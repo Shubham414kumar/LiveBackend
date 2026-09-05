@@ -1,0 +1,51 @@
+# SentinelAI backend — runtime dependencies only.
+#
+# Dev and test tooling lives in requirements-dev.txt so production images stay
+# small and don't ship a test runner or a linter.
+#
+# Ranges are pinned to a compatible minor band rather than an exact patch. For
+# a byte-reproducible deploy, generate a lockfile from this file:
+#     uv pip compile requirements.txt -o requirements.lock
+# and install from the lock in CI and in the Docker build.
+
+# --- Web framework ---------------------------------------------------------
+fastapi>=0.115.0,<0.116.0
+uvicorn[standard]>=0.30.0,<0.35.0
+
+# --- Configuration and validation -----------------------------------------
+pydantic>=2.9,<3.0
+pydantic-settings>=2.4,<3.0
+python-dotenv>=1.0,<2.0
+
+# --- HTTP client -----------------------------------------------------------
+# Was missing entirely from the previous requirements.txt even though
+# server.py imported it at module scope. A clean install could not start.
+httpx>=0.27,<0.29
+anyio>=4.4,<5.0
+
+# --- Data store ------------------------------------------------------------
+supabase>=2.9,<3.0
+
+# --- Cache and distributed rate limiting -----------------------------------
+redis>=5.0,<7.0
+
+# --- Auth ------------------------------------------------------------------
+pyjwt>=2.9,<3.0
+bcrypt>=4.1,<5.0
+
+# --- AI --------------------------------------------------------------------
+google-generativeai>=0.8,<0.9
+
+# --- Runtime data ----------------------------------------------------------
+# Timezone database: slim base images ship without one, and the disaster and
+# weather services do local-time conversion.
+tzdata>=2024.2
+
+# Removed deliberately, all unused by application code:
+#   boto3, requests-oauthlib, requests, pandas, numpy, jq, typer,
+#   python-multipart, email-validator, cryptography
+# Removed as redundant/superseded:
+#   passlib      -> bcrypt is used directly
+#   python-jose  -> pyjwt is used directly (two JWT libraries is one too many)
+# Moved to requirements-dev.txt:
+#   pytest, black, isort, flake8, mypy

@@ -1,0 +1,181 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinelai-backend"
+version = "2.0.0"
+description = "Real-time air quality, disaster and emergency intelligence API"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+# --strict-markers turns a typo'd marker into an error instead of a silently
+# unfiltered test. --strict-config does the same for this config block.
+addopts = [
+    "-q",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+    # Network tests are excluded by default. See the `live` marker below.
+    "-m",
+    "not live",
+]
+
+markers = [
+    "live: hits real third-party APIs over the network. Excluded by default; run with `pytest -m live`.",
+    "integration: spans more than one module but stays offline.",
+    "slow: takes more than a second.",
+]
+
+# Every async test runs without needing a per-test decorator.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+filterwarnings = [
+    "error",
+    # Third-party deprecations we don't control.
+    "ignore::DeprecationWarning:google.*",
+    "ignore::DeprecationWarning:httpx.*",
+    "ignore::DeprecationWarning:pydantic.*",
+]
+
+log_cli = false
+log_cli_level = "INFO"
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "app/__init__.py",
+    "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+# Raised deliberately as coverage improves; CI fails below this.
+fail_under = 70
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "@(abc\\.)?abstractmethod",
+]
+
+# ---------------------------------------------------------------------------
+# ruff  (replaces black + isort + flake8)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["."]
+extend-exclude = [".venv", "venv", "__pycache__"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ASYNC",  # flake8-async — catches blocking calls inside async def
+    "S",      # flake8-bandit
+    "T20",    # flake8-print — no stray print() in a service
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific
+]
+ignore = [
+    "E501",    # line length is enforced by the formatter
+    "B008",    # Depends() in defaults is the FastAPI idiom
+    "S104",    # binding 0.0.0.0 is correct inside a container
+    "RUF001",  # ambiguous unicode in prose docstrings is intentional
+    "RUF002",
+    "RUF003",
+    # PEP 585/604 built-in generics. This codebase spells annotations
+    # `Dict[str, Any]` and `Optional[str]` in every module, and a half-migrated
+    # file set is harder to read than either style used consistently. Switching
+    # is a mechanical, reviewable change to make in one pass — not incidentally,
+    # a few files at a time, while other work is in flight.
+    "UP006",
+    "UP007",
+    "UP035",
+    "UP045",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use assert, hardcoded fake secrets, and private access.
+"tests/*" = ["S101", "S105", "S106", "S311", "SLF001"]
+# The compatibility shim exists only to re-export.
+"server.py" = ["F401", "F403"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ---------------------------------------------------------------------------
+# mypy
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+files = ["app"]
+plugins = ["pydantic.mypy"]
+
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+no_implicit_optional = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+strict_equality = true
+extra_checks = true
+
+# Not turned on yet: supabase and google-generativeai are largely untyped, so
+# `disallow_any_explicit` and `disallow_untyped_calls` would produce noise that
+# drowns out real findings. The per-module overrides below scope that damage.
+disallow_untyped_calls = false
+
+[[tool.mypy.overrides]]
+module = [
+    "supabase.*",
+    "postgrest.*",
+    "google.generativeai.*",
+    "google.*",
+    "redis.*",
+    "fakeredis.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
