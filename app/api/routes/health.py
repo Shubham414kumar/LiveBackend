@@ -15,7 +15,6 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, Response, status
 
-from app import __version__
 from app.api.deps import read_limit
 from app.core.cache import cache
 from app.core.config import settings
@@ -25,23 +24,19 @@ from app.services import ai as ai_service
 
 router = APIRouter(tags=["health"])
 
+# The service banner served at `/api` itself is *not* here, though it belongs to
+# this module by subject. FastAPI raises `FastAPIError: Prefix and path cannot be
+# both empty` when a route's path and its include-prefix are both empty, and this
+# router carries no prefix — so an empty path on it cannot be included at all.
+# The only router that can express `/api` exactly is the one that owns the `/api`
+# prefix, which is why the banner is declared in `app/api/router.py`. Serving it
+# at `"/"` instead is not an option: the app sets `redirect_slashes=False`, so
+# `/api/` would answer and `/api` would 404.
+
 # The three probes below are deliberately *not* rate limited. An orchestrator
 # polls them every few seconds from a single address, which is exactly the
 # traffic shape a limiter is built to reject — throttling them would make the
 # platform believe the service was unhealthy.
-
-
-@router.get(
-    "",
-    response_model=SimpleStatus,
-    dependencies=[Depends(read_limit)],
-    summary="Service banner",
-)
-async def root() -> Dict[str, Any]:
-    return {
-        "status": "ok",
-        "detail": f"{settings.service_name} v{__version__} ({settings.environment})",
-    }
 
 
 @router.get("/health/live", response_model=SimpleStatus, summary="Liveness probe")
