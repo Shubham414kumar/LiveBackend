@@ -39,6 +39,7 @@ ReportCategory = Literal[
 
 # Capitalised to stay wire-compatible with the existing mobile client.
 Severity = Literal["Low", "Moderate", "Severe", "Extreme"]
+Confidence = Literal["high", "medium", "low", "unknown"]
 
 ReportStatus = Literal["visible", "hidden", "removed"]
 
@@ -156,6 +157,66 @@ class WeatherResponse(BaseModel):
     current: CurrentWeather = Field(default_factory=CurrentWeather)
 
 
+class HourlyForecast(BaseModel):
+    time: str
+    temperature_c: Optional[float] = None
+    temperature_confidence: Confidence = "unknown"
+    temperature_spread_c: Optional[float] = None
+    precipitation_mm: Optional[float] = None
+    precipitation_probability_pct: Optional[int] = Field(default=None, ge=0, le=100)
+    precipitation_confidence: Confidence = "unknown"
+    wind_speed_kmh: Optional[float] = None
+    wind_confidence: Confidence = "unknown"
+    weather_code: Optional[int] = None
+
+
+class DailyForecast(BaseModel):
+    date: str
+    temp_min_c: Optional[float] = None
+    temp_max_c: Optional[float] = None
+    precipitation_sum_mm: Optional[float] = None
+    precipitation_probability_pct: Optional[int] = Field(default=None, ge=0, le=100)
+    confidence: Confidence = "unknown"
+    sunrise: Optional[str] = None
+    sunset: Optional[str] = None
+
+
+class ForecastResponse(BaseModel):
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    timezone: Optional[str] = None
+    generated_at: datetime
+    models_used: List[str] = Field(default_factory=list)
+    models_failed: List[str] = Field(default_factory=list)
+    complete: bool = True
+    hourly: List[HourlyForecast] = Field(default_factory=list)
+    daily: List[DailyForecast] = Field(default_factory=list)
+    attribution: str
+
+
+class NowcastStep(BaseModel):
+    time: str
+    precipitation_mm: float
+    intensity: Literal["none", "light", "moderate", "heavy", "violent"]
+
+
+class NowcastResponse(BaseModel):
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
+    timezone: Optional[str] = None
+    generated_at: datetime
+    radar_frame_time: Optional[datetime] = None
+    radar_available: bool = False
+    summary: str
+    starts_in_minutes: Optional[int] = None
+    ends_in_minutes: Optional[int] = None
+    peak_intensity_mm_h: float = 0
+    confidence: Confidence = "unknown"
+    steps: List[NowcastStep] = Field(default_factory=list)
+    complete: bool = True
+    attribution: str
+
+
 class TileUrlResponse(BaseModel):
     tile_url: str
     attribution: str
@@ -207,6 +268,24 @@ class DisasterFeed(BaseModel):
     # Which providers failed, so a partial feed is never mistaken for a quiet day.
     sources_failed: List[str] = Field(default_factory=list)
     partial: bool = False
+
+
+class DisasterNewsItem(BaseModel):
+    id: str
+    title: str
+    url: str
+    source: Optional[str] = None
+    published_at: Optional[str] = None
+    image_url: Optional[str] = None
+    language: Optional[str] = None
+
+
+class DisasterNewsResponse(BaseModel):
+    articles: List[DisasterNewsItem] = Field(default_factory=list)
+    count: int
+    source_available: bool = True
+    partial: bool = False
+    attribution: str = "News links provided by GDELT; images remain property of their publishers."
 
 
 class EmergencyContacts(BaseModel):
@@ -310,6 +389,7 @@ class ReportCreate(StrictModel):
     lat: Latitude
     lon: Longitude
     severity: Severity = "Moderate"
+    image_path: Optional[str] = Field(default=None, max_length=300, pattern=r"^reports/[a-f0-9]{64}/[a-f0-9-]+\.(?:jpg|jpeg|png|webp)$")
 
     @field_validator("title")
     @classmethod
@@ -327,11 +407,13 @@ class ReportCreate(StrictModel):
         return sanitize_string(v, 2000) or None
 
 
+
 class Report(BaseModel):
     id: str
     category: str
     title: str
     description: Optional[str] = None
+    image_url: Optional[str] = None
     lat: float
     lon: float
     severity: str
@@ -354,6 +436,16 @@ class ReportCreated(BaseModel):
     id: str
     status: str
     created_at: Optional[str] = None
+
+
+class ReportImageUploadRequest(StrictModel):
+    content_type: Literal["image/jpeg", "image/png", "image/webp"]
+
+
+class ReportImageUploadResponse(BaseModel):
+    upload_url: str
+    storage_path: str
+    expires_in: int
 
 
 class VoteResponse(BaseModel):

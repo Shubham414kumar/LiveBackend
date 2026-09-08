@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, Query
 from app.api.deps import read_limit
 from app.models.schemas import (
     FloodRisk,
+    ForecastResponse,
+    NowcastResponse,
     Latitude,
     Longitude,
     TileUrlResponse,
@@ -17,6 +19,16 @@ from app.models.schemas import (
 from app.services import weather as weather_service
 
 router = APIRouter(tags=["weather"], dependencies=[Depends(read_limit)])
+
+
+@router.get("/weather/forecast", response_model=ForecastResponse, summary="Ensemble weather forecast")
+async def weather_forecast(lat: Latitude = Query(...), lon: Longitude = Query(...), hours: int = Query(48, ge=1, le=48), days: int = Query(7, ge=1, le=7)) -> Dict[str, Any]:
+    return await weather_service.forecast(lat, lon, hours, days)
+
+
+@router.get("/weather/nowcast", response_model=NowcastResponse, summary="Short-range precipitation nowcast")
+async def weather_nowcast(lat: Latitude = Query(...), lon: Longitude = Query(...)) -> Dict[str, Any]:
+    return await weather_service.nowcast(lat, lon)
 
 
 @router.get("/weather/current", response_model=WeatherResponse, summary="Current weather")

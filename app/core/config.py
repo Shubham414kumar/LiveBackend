@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     # ---------- Datastore ----------
     supabase_url: str = Field(default="", alias="SUPABASE_URL")
     supabase_key: SecretStr = Field(default=SecretStr(""), alias="SUPABASE_KEY")
+    report_image_bucket: str = Field(default="report-images", alias="REPORT_IMAGE_BUCKET")
+    report_image_url_ttl_seconds: int = Field(default=900, ge=60, le=3600, alias="REPORT_IMAGE_URL_TTL_SECONDS")
 
     # ---------- Cache / rate-limit backend ----------
     # Optional. Without it the process falls back to per-worker in-memory
@@ -77,6 +79,8 @@ class Settings(BaseSettings):
     # Sending a generic UA is grounds for an IP ban.
     contact_email: str = Field(default="", alias="CONTACT_EMAIL")
     public_app_url: str = Field(default="https://sentinelai.app", alias="PUBLIC_APP_URL")
+    sentry_dsn: Optional[str] = Field(default=None, alias="SENTRY_DSN")
+    sentry_traces_sample_rate: float = Field(default=0.0, ge=0, le=1, alias="SENTRY_TRACES_SAMPLE_RATE")
 
     # ---------- HTTP surface ----------
     allowed_origins_raw: str = Field(default="*", alias="ALLOWED_ORIGINS")

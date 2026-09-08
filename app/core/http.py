@@ -77,6 +77,58 @@ class UpstreamError(Exception):
         self.timeout = timeout
 
 
+def _error_reason(response: httpx.Response) -> Optional[str]:
+    """Extract a provider-supplied explanation from an error response body.
+
+    Opt-in per call site (``explain_errors=True``), because a body is only safe
+    to record when the provider takes no credential in the request — otherwise
+    the explanation can echo a query string carrying an API token. Open-Meteo is
+    keyless and answers ``{"error": true, "reason": "..."}``, and that reason is
+    the whole difference between "your parameters are wrong" and "you are rate
+    limited", which is otherwise indistinguishable from a bare HTTP 400.
+    """
+    if len(response.content) > 4096:
+        return None
+    try:
+        body = response.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    reason = body.get("reason") or body.get("error_description") or body.get("message")
+    return reason[:300] if isinstance(reason, str) else None
+
+
+def error_fields(exc: Optional[BaseException]) -> Dict[str, Any]:
+    """Structured log fields describing *why* an upstream call failed.
+
+    Aggregating endpoints gather their legs with ``return_exceptions=True`` and
+    then log whichever came back as an exception. Recording only
+    ``type(exc).__name__`` yields the string ``"UpstreamError"``, which does not
+    distinguish a timeout from an HTTP 429 from an undecodable body — and those
+    three have completely different fixes. Diagnosing a failing leg from
+    production logs was impossible for exactly this reason.
+
+    Only :class:`UpstreamError` is described in detail, and that is a security
+    decision rather than laziness. Its ``message`` is constructed by this module
+    without the request URL or any credential, so it is safe to record. An
+    arbitrary exception's string carries no such guarantee: an httpx error can
+    embed the request URL, and some provider URLs carry the API token in their
+    query string. For anything else, the type alone is recorded.
+    """
+    if exc is None:
+        return {"error": None}
+
+    fields: Dict[str, Any] = {"error": type(exc).__name__}
+    if isinstance(exc, UpstreamError):
+        fields["provider"] = exc.provider
+        fields["reason"] = exc.message
+        fields["timeout"] = exc.timeout
+        if exc.status_code is not None:
+            fields["upstream_status"] = exc.status_code
+    return fields
+
+
 class _HostThrottle:
     """Serialises and paces requests per host."""
 
@@ -189,6 +241,7 @@ async def request_json(
     timeout: Optional[float] = None,
     retries: Optional[int] = None,
     retry_statuses: Optional[FrozenSet[int]] = None,
+    explain_errors: bool = False,
 ) -> Any:
     """Perform an HTTP request and decode JSON, with retries and throttling.
 
@@ -200,6 +253,10 @@ async def request_json(
 
     ``retry_statuses`` overrides which response codes are retried. Narrow it for
     any request that is not safe to repeat.
+
+    ``explain_errors`` folds the provider's own explanation of a 4xx/5xx into the
+    error message and the log record. Enable it only for providers that take no
+    credential in the request — see :func:`_error_reason`.
 
     Raises:
         UpstreamError: on timeout, network failure, non-2xx after retries, or
@@ -257,10 +314,13 @@ async def request_json(
                 )
             else:
                 status = response.status_code
+                detail = _error_reason(response) if explain_errors and status >= 400 else None
                 if status in retryable and attempt < max_attempts - 1:
                     retry_delay = _retry_after_seconds(response) or _backoff_delay(attempt)
                     last_error = UpstreamError(
-                        provider, f"returned HTTP {status}", status_code=status
+                        provider,
+                        f"returned HTTP {status}" + (f": {detail}" if detail else ""),
+                        status_code=status,
                     )
                     logger.warning(
                         "Upstream returned retryable status",
@@ -270,14 +330,24 @@ async def request_json(
                             "status": status,
                             "attempt": attempt + 1,
                             "retry_in": round(retry_delay, 2),
+                            "upstream_reason": detail,
                         },
                     )
                 elif status >= 400:
                     logger.warning(
                         "Upstream returned error status",
-                        extra={"provider": provider, "host": host, "status": status},
+                        extra={
+                            "provider": provider,
+                            "host": host,
+                            "status": status,
+                            "upstream_reason": detail,
+                        },
                     )
-                    raise UpstreamError(provider, f"returned HTTP {status}", status_code=status)
+                    raise UpstreamError(
+                        provider,
+                        f"returned HTTP {status}" + (f": {detail}" if detail else ""),
+                        status_code=status,
+                    )
                 else:
                     try:
                         return response.json()

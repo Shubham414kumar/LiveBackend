@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.deps import read_limit
-from app.models.schemas import CategoryMeta, DisasterFeed, EmergencyContacts
+from app.models.schemas import CategoryMeta, DisasterFeed, DisasterNewsResponse, EmergencyContacts
 from app.services import disasters as disasters_service, emergency as emergency_service
 
 router = APIRouter(prefix="/disasters", tags=["disasters"], dependencies=[Depends(read_limit)])
@@ -58,6 +58,15 @@ async def eonet_events(
 @router.get("/gdacs", response_model=DisasterFeed, summary="GDACS alerts")
 async def gdacs(days: int = Query(10, ge=1, le=90)) -> Dict[str, Any]:
     return _feed(await disasters_service.gdacs_events(days=days))
+
+
+@router.get("/news", response_model=DisasterNewsResponse, summary="Recent disaster news")
+async def news(category: Optional[str] = Query(None, max_length=30), limit: int = Query(20, ge=1, le=50)) -> Dict[str, Any]:
+    try:
+        articles = await disasters_service.disaster_news(category, limit)
+    except Exception:
+        return {"articles": [], "count": 0, "source_available": False, "partial": True}
+    return {"articles": articles, "count": len(articles), "source_available": True, "partial": False}
 
 
 @router.get(

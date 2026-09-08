@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, Response, status
 from app.api.deps import read_limit
 from app.core.cache import cache
 from app.core.config import settings
+from app.core.rate_limit import limiter
 from app.db import supabase
 from app.models.schemas import HealthResponse, SimpleStatus
 from app.services import ai as ai_service
@@ -66,6 +67,27 @@ async def ready(response: Response) -> Dict[str, Any]:
     return {"status": "degraded" if required_down else "ok", "checks": checks}
 
 
+def _backend_state(actual: str) -> str:
+    """Describe a Redis-backed subsystem in one machine-readable token.
+
+    The cache and the rate limiter each degrade to in-memory storage on any
+    Redis failure — wrong URL, wrong password, unreachable host — and record
+    only a log warning that nothing reads. So "configured for Redis but running
+    on memory" is a distinct state from "never configured for Redis", and it is
+    the one worth surfacing: limits become per-worker and the cache stops being
+    shared, silently.
+
+    Folded into the value rather than reported as a sibling boolean because
+    ``HealthResponse.dependencies`` is typed ``Dict[str, str]``, and Pydantic
+    will not coerce a bool into that.
+    """
+    if actual not in ("redis", "memory"):
+        return actual
+    if actual == "redis":
+        return "redis"
+    return "memory_redis_unreachable" if settings.redis_url else "memory"
+
+
 @router.get("/health", response_model=HealthResponse, summary="Detailed health")
 async def health() -> Dict[str, Any]:
     database_state = "not_configured"
@@ -90,8 +112,9 @@ async def health() -> Dict[str, Any]:
         },
         "dependencies": {
             "database": database_state,
-            "cache": str(cache.stats().get("backend", "unknown")),
-            "rate_limiter": "redis" if settings.redis_url else "memory",
+            # Both of these report the store *in use*, not the one configured.
+            "cache": _backend_state(str(cache.stats().get("backend", "unknown"))),
+            "rate_limiter": _backend_state(limiter.backend),
         },
     }
 
@@ -107,7 +130,8 @@ async def cache_stats() -> Dict[str, Any]:
         "rate_limit": {
             "enabled": settings.rate_limit_enabled,
             "window_seconds": settings.rate_limit_window_seconds,
-            "backend": "redis" if settings.redis_url else "memory",
+            "backend": limiter.backend,
+            "redis_configured": bool(settings.redis_url),
             "limits": {
                 "read": settings.rate_limit_read,
                 "write": settings.rate_limit_write,

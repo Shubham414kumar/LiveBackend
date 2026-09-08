@@ -41,6 +41,9 @@ google-generativeai>=0.8,<0.9
 # weather services do local-time conversion.
 tzdata>=2024.2
 
+# Optional error and performance monitoring. No events are sent when SENTRY_DSN is blank.
+sentry-sdk[fastapi]>=2.0,<3.0
+
 # Removed deliberately, all unused by application code:
 #   boto3, requests-oauthlib, requests, pandas, numpy, jq, typer,
 #   python-multipart, email-validator, cryptography

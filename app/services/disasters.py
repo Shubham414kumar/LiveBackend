@@ -12,6 +12,7 @@ the events so the client can say "1 of 4 feeds unavailable".
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -26,6 +27,7 @@ USGS_BASE = "https://earthquake.usgs.gov/fdsnws/event/1/query"
 EONET_BASE = "https://eonet.gsfc.nasa.gov/api/v3/events"
 GDACS_BASE = "https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH"
 DISEASE_BASE = "https://disease.sh/v3/covid-19/countries"
+GDELT_DOC_BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 # ---------------------------------------------------------------------------
 # Category metadata
@@ -68,6 +70,40 @@ GDACS_CAT_MAP = {
 }
 
 _GDACS_SEVERITY = {"Green": "Low", "Orange": "Moderate", "Red": "Severe"}
+
+
+async def disaster_news(category: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    """Fetch recent disaster reporting without treating news as an alert source."""
+    key = cache_key("disaster-news", category=category or "all", limit=limit)
+
+    async def _fetch() -> List[Dict[str, Any]]:
+        topic = {
+            "earthquake": "earthquake",
+            "flood": "flood OR flooding",
+            "wildfire": "wildfire OR forest fire",
+            "storm": "cyclone OR hurricane OR severe storm",
+            "volcano": "volcanic eruption",
+        }.get(category or "", "earthquake OR flood OR wildfire OR cyclone OR volcano")
+        payload = await get_json(
+            GDELT_DOC_BASE,
+            provider="GDELT",
+            params={"query": f"({topic})", "mode": "artlist", "format": "json", "maxrecords": min(limit, 50), "sort": "datedesc"},
+        )
+        if not isinstance(payload, dict):
+            raise UpstreamError("GDELT", "unexpected response shape")
+        articles: List[Dict[str, Any]] = []
+        for index, article in enumerate(payload.get("articles") or []):
+            url = article.get("url")
+            title = article.get("title")
+            if not isinstance(url, str) or not url.startswith("https://") or not isinstance(title, str) or not title.strip():
+                continue
+            image = article.get("socialimage")
+            image_url = image if isinstance(image, str) and image.startswith("https://") else None
+            stable_id = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+            articles.append({"id": f"gdelt-{stable_id}", "title": title.strip(), "url": url, "source": article.get("domain"), "published_at": article.get("seendate"), "image_url": image_url, "language": article.get("language")})
+        return articles
+
+    return await cache.get_or_set(key, max(settings.cache_ttl_disasters, 900), _fetch)
 
 # Country name -> ISO2, for the free-text country names USGS puts in `place`.
 COUNTRY_NAME_TO_ISO2: Dict[str, str] = {

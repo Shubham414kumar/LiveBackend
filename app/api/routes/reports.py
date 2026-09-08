@@ -24,12 +24,15 @@ from app.db.repositories import (
     MAX_REPORTS_PER_DEVICE_PER_DAY,
     reports_repo,
 )
+from app.services import report_images
 from app.models.schemas import (
     Latitude,
     Longitude,
     ReportCategoriesResponse,
     ReportCreate,
     ReportCreated,
+    ReportImageUploadRequest,
+    ReportImageUploadResponse,
     ReportsResponse,
     SimpleStatus,
     VoteResponse,
@@ -53,6 +56,19 @@ REPORT_CATEGORIES: Dict[str, Dict[str, str]] = {
 SEVERITIES = ["Low", "Moderate", "Severe", "Extreme"]
 
 MAX_REPORT_RADIUS_KM = 200.0
+
+
+@router.post(
+    "/image-upload-url",
+    response_model=ReportImageUploadResponse,
+    dependencies=[Depends(write_limit)],
+    summary="Create a private signed report-image upload URL",
+)
+async def image_upload_url(
+    payload: ReportImageUploadRequest,
+    device_id: str = Depends(require_device_id),
+) -> Dict[str, Any]:
+    return await report_images.create_upload_url(device_id, payload.content_type)
 
 
 @router.get(
@@ -101,12 +117,20 @@ async def list_reports(
     reports: List[Dict[str, Any]] = []
     for row in rows:
         report_id = str(row.get("id"))
+        image_url = None
+        if row.get("image_path"):
+            try:
+                image_url = await report_images.signed_read_url(row["image_path"])
+            except Exception:
+                # A missing storage object must not take the text report feed down.
+                image_url = None
         reports.append(
             {
                 "id": report_id,
                 "category": row.get("category") or "other",
                 "title": row.get("title") or "",
                 "description": row.get("description"),
+                "image_url": image_url,
                 "lat": row.get("lat"),
                 "lon": row.get("lon"),
                 "severity": row.get("severity") or "Moderate",
@@ -135,6 +159,9 @@ async def create_report(
     payload: ReportCreate,
     device_id: str = Depends(require_device_id),
 ) -> Dict[str, Any]:
+    if payload.image_path and not report_images.is_owned_path(device_id, payload.image_path):
+        raise ValidationError("The attached image does not belong to this device.")
+
     recent = await reports_repo.count_recent_for_device(device_id, hours=24)
     if recent >= MAX_REPORTS_PER_DEVICE_PER_DAY:
         # A daily quota rather than a pure rate limit: the failure mode being
@@ -152,9 +179,11 @@ async def create_report(
         category=payload.category,
         title=payload.title,
         description=payload.description,
+        image_path=payload.image_path,
         lat=payload.lat,
         lon=payload.lon,
         severity=payload.severity,
+        status="hidden" if payload.image_path else "visible",
     )
     if not row:
         raise ValidationError("The report could not be saved. Please try again.")
@@ -209,7 +238,19 @@ async def delete_report(
     check, so a request for someone else's report matches zero rows and returns
     404 — it does not reveal that the report exists.
     """
+    report = await reports_repo.get(report_id)
+    if not report or report.get("device_id") != device_id:
+        raise NotFoundError("No report of yours matches that id.")
+
     deleted = await reports_repo.delete_own(device_id, report_id)
     if not deleted:
         raise NotFoundError("No report of yours matches that id.")
+
+    if report.get("image_path"):
+        try:
+            await report_images.delete_image(report["image_path"])
+        except Exception:
+            # The database deletion is already complete. Keep the user-facing
+            # operation successful and let storage cleanup be retried by ops.
+            pass
     return {"status": "deleted", "detail": "Your report has been withdrawn."}

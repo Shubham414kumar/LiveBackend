@@ -38,6 +38,24 @@ from app.db import supabase
 
 logger = get_logger(__name__)
 
+
+def _configure_sentry() -> None:
+    if not settings.sentry_dsn:
+        return
+    try:
+        import sentry_sdk
+
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.environment,
+            release=settings.release,
+            send_default_pii=False,
+            traces_sample_rate=settings.sentry_traces_sample_rate,
+        )
+        logger.info("Sentry monitoring enabled")
+    except Exception as exc:
+        logger.warning("Sentry could not be initialised: %s", exc)
+
 DESCRIPTION = """
 Real-time environmental and disaster intelligence API.
 
@@ -71,6 +89,7 @@ TAGS_METADATA = [
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Acquire process-wide resources on boot, release them on shutdown."""
     configure_logging()
+    _configure_sentry()
     logger.info(
         "Starting %s",
         settings.service_name,

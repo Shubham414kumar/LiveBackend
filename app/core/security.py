@@ -215,17 +215,20 @@ class BodySizeLimitMiddleware:
             return
 
         headers = Headers(scope=scope)
+        async def reject() -> None:
+            response = problem_response(
+                status_code=413,
+                title="Payload Too Large",
+                detail=(f"Request body exceeds the {self.max_bytes // 1024} KiB limit."),
+                code="payload_too_large",
+            )
+            await response(scope, receive, send)
+
         content_length = headers.get("content-length")
         if content_length:
             try:
                 if int(content_length) > self.max_bytes:
-                    response = problem_response(
-                        status_code=413,
-                        title="Payload Too Large",
-                        detail=(f"Request body exceeds the {self.max_bytes // 1024} KiB limit."),
-                        code="payload_too_large",
-                    )
-                    await response(scope, receive, send)
+                    await reject()
                     return
             except ValueError:
                 response = problem_response(
@@ -237,7 +240,29 @@ class BodySizeLimitMiddleware:
                 await response(scope, receive, send)
                 return
 
-        await self.app(scope, receive, send)
+        # Content-Length is optional for HTTP/1.1 chunked and HTTP/2 requests.
+        # Count those chunks as they arrive, otherwise the advertised cap only
+        # protects clients that voluntarily provide a length.
+        received = 0
+        rejected = False
+
+        async def limited_receive():  # type: ignore[no-untyped-def]
+            nonlocal received, rejected
+            message = await receive()
+            if message.get("type") == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    if not rejected:
+                        rejected = True
+                        await reject()
+                    return {"type": "http.disconnect"}
+            return message
+
+        async def guarded_send(message):  # type: ignore[no-untyped-def]
+            if not rejected:
+                await send(message)
+
+        await self.app(scope, limited_receive, guarded_send)
 
 
 __all__ = [

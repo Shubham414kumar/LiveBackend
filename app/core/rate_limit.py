@@ -98,6 +98,20 @@ class RateLimiter:
         async with self._lock:
             self._windows.clear()
 
+    @property
+    def backend(self) -> str:
+        """Which store is actually enforcing limits, not which one was asked for.
+
+        :meth:`connect` degrades to the in-memory windows on any Redis failure
+        — wrong URL, wrong password, unreachable host — and logs a warning that
+        nothing reads. Reporting ``"redis"`` merely because ``REDIS_URL`` is set
+        therefore describes intent, and it diverges from reality in precisely the
+        situation an operator needs told: limits have silently become per-worker,
+        so the effective ceiling is the configured one multiplied by the worker
+        count, and it resets on every deploy.
+        """
+        return "redis" if self._redis_available else "memory"
+
     async def reset(self) -> None:
         """Clear all counters. Used by the test suite between cases."""
         async with self._lock:

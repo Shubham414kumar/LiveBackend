@@ -335,6 +335,8 @@ class ReportsRepository:
         lat: float,
         lon: float,
         severity: str,
+        image_path: Optional[str] = None,
+        status: str = STATUS_VISIBLE,
     ) -> Optional[Dict[str, Any]]:
         client = require_client()
         now = _utcnow_iso()
@@ -343,10 +345,11 @@ class ReportsRepository:
             "category": category,
             "title": title,
             "description": description,
+            "image_path": image_path,
             "lat": lat,
             "lon": lon,
             "severity": severity,
-            "status": STATUS_VISIBLE,
+            "status": status,
             "upvotes": 0,
             "created_at": now,
             "updated_at": now,

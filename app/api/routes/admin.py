@@ -20,11 +20,12 @@ from fastapi import APIRouter, Depends, Path, Query, Request
 from app.api.deps import auth_limit, read_limit, write_limit
 from app.core.admin_auth import create_access_token, require_admin, verify_credentials
 from app.core.cache import cache
-from app.core.config import settings
 from app.core.errors import AuthError, NotFoundError
 from app.core.logging import get_logger
+from app.core.rate_limit import limiter
 from app.core.security import client_ip
 from app.db.repositories import REPORT_STATUSES, push_tokens_repo, reports_repo
+from app.services import report_images
 from app.models.schemas import (
     AdminLoginRequest,
     AdminLoginResponse,
@@ -39,12 +40,19 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-def _shape(row: Dict[str, Any]) -> Dict[str, Any]:
+async def _shape(row: Dict[str, Any]) -> Dict[str, Any]:
+    image_url = None
+    if row.get("image_path"):
+        try:
+            image_url = await report_images.signed_read_url(row["image_path"])
+        except Exception:
+            image_url = None
     return {
         "id": str(row.get("id")),
         "category": row.get("category") or "other",
         "title": row.get("title") or "",
         "description": row.get("description"),
+        "image_url": image_url,
         "lat": row.get("lat"),
         "lon": row.get("lon"),
         "severity": row.get("severity") or "Moderate",
@@ -108,7 +116,7 @@ async def stats() -> Dict[str, Any]:
         "reports": await reports_repo.admin_stats(),
         "push_tokens": await push_tokens_repo.count(),
         "cache_backend": str(cache.stats().get("backend", "unknown")),
-        "rate_limit_backend": "redis" if settings.redis_url else "memory",
+        "rate_limit_backend": limiter.backend,
     }
 
 
@@ -134,7 +142,7 @@ async def list_reports(
     rows, total = await reports_repo.admin_list(
         status=status, category=category, limit=limit, offset=offset
     )
-    reports: List[Dict[str, Any]] = [_shape(row) for row in rows]
+    reports: List[Dict[str, Any]] = [await _shape(row) for row in rows]
     return {"reports": reports, "total": total, "limit": limit, "offset": offset}
 
 
@@ -160,6 +168,14 @@ async def moderate(
     if not row:
         raise NotFoundError("No report matches that id.")
 
+    if payload.status == "removed" and row.get("image_path"):
+        try:
+            await report_images.delete_image(row["image_path"])
+        except Exception:
+            # Moderation must not fail after the database decision is recorded.
+            # The object can be removed by the storage cleanup runbook.
+            logger.exception("Could not delete removed report evidence")
+
     logger.info(
         "Report moderated",
         extra={
@@ -169,4 +185,4 @@ async def moderate(
             "reason": payload.reason,
         },
     )
-    return _shape(row)
+    return await _shape(row)

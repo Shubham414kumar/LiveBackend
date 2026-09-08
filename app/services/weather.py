@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from statistics import median
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.cache import cache, cache_key, round_coord
 from app.core.config import settings
 from app.core.geoutils import haversine_km
-from app.core.http import UpstreamError, get_json
+from app.core.http import UpstreamError, error_fields, get_json
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -54,6 +55,122 @@ _CURRENT_VARS = (
     "wind_speed_10m",
     "wind_direction_10m",
 )
+
+FORECAST_MODELS = ("icon_seamless", "gfs_seamless", "ecmwf_ifs025", "gem_seamless", "meteofrance_seamless")
+
+
+def _confidence(values: List[float], kind: str) -> str:
+    if len(values) < 2:
+        return "unknown"
+    if kind == "precipitation":
+        agreement = sum(value >= 0.1 for value in values) / len(values)
+        if agreement >= 0.8 or agreement <= 0.2:
+            return "high"
+        if agreement >= 0.6 or agreement <= 0.4:
+            return "medium"
+        return "low"
+    spread = max(values) - min(values)
+    limit = 1.5 if kind == "temperature" else 8.0
+    high = limit
+    medium = limit * 2
+    return "high" if spread <= high else "medium" if spread <= medium else "low"
+
+
+def _rain_intensity(value: float) -> str:
+    if value <= 0.01:
+        return "none"
+    if value < 1:
+        return "light"
+    if value < 4:
+        return "moderate"
+    if value < 10:
+        return "heavy"
+    return "violent"
+
+
+async def nowcast(lat: float, lon: float) -> Dict[str, Any]:
+    key = cache_key("weather:nowcast", lat=round_coord(lat, 2), lon=round_coord(lon, 2))
+
+    async def _fetch() -> Dict[str, Any]:
+        payload, radar = await asyncio.gather(
+            get_json(OPEN_METEO_BASE, provider=PROVIDER, params={"latitude": lat, "longitude": lon, "timezone": "auto", "forecast_days": 1, "minutely_15": "precipitation,rain,snowfall,weather_code"}, explain_errors=True),
+            radar_tile_url(), return_exceptions=True,
+        )
+        if not isinstance(payload, dict):
+            raise UpstreamError(PROVIDER, "nowcast response unavailable")
+        block = payload.get("minutely_15") or {}
+        times = block.get("time") or []
+        rain = block.get("precipitation") or block.get("rain") or []
+        steps = [{"time": time, "precipitation_mm": round(float(rain[index] or 0), 2), "intensity": _rain_intensity(float(rain[index] or 0))} for index, time in enumerate(times[:9]) if index < len(rain)]
+        wet = [index for index, step in enumerate(steps) if step["precipitation_mm"] >= 0.1]
+        radar_available = isinstance(radar, dict)
+        confidence = "high" if radar_available and len(steps) >= 2 else "medium" if steps else "unknown"
+        if not wet:
+            summary = "No rain is expected in the next two hours."
+            starts = ends = None
+        else:
+            starts, ends = wet[0] * 15, (wet[-1] + 1) * 15
+            summary = f"Rain may start in about {starts} minutes and last roughly {ends - starts} minutes."
+        return {"latitude": payload.get("latitude"), "longitude": payload.get("longitude"), "timezone": payload.get("timezone"), "generated_at": datetime.now(UTC), "radar_frame_time": radar.get("frame_time") if isinstance(radar, dict) else None, "radar_available": radar_available, "summary": summary, "starts_in_minutes": starts, "ends_in_minutes": ends, "peak_intensity_mm_h": round(max((step["precipitation_mm"] * 4 for step in steps), default=0), 1), "confidence": confidence, "steps": steps, "complete": bool(steps), "attribution": ATTRIBUTION + (". " + RADAR_ATTRIBUTION if radar_available else "")}
+
+    return await cache.get_or_set(key, 300, _fetch)
+
+
+def _model_values(block: Dict[str, Any], name: str, index: int) -> List[float]:
+    values = []
+    for model in FORECAST_MODELS:
+        series = block.get(f"{name}_{model}")
+        value = series[index] if isinstance(series, list) and index < len(series) else None
+        if isinstance(value, (int, float)):
+            values.append(float(value))
+    return values
+
+
+async def forecast(lat: float, lon: float, hours: int = 48, days: int = 7) -> Dict[str, Any]:
+    hours = max(1, min(hours, 48))
+    days = max(1, min(days, 7))
+    key = cache_key("weather:forecast", lat=round_coord(lat), lon=round_coord(lon), hours=hours, days=days)
+
+    async def _fetch() -> Dict[str, Any]:
+        payload = await get_json(
+            OPEN_METEO_BASE, provider=PROVIDER,
+            params={
+                "latitude": lat, "longitude": lon, "timezone": "auto",
+                "forecast_days": days, "models": ",".join(FORECAST_MODELS),
+                "hourly": "temperature_2m,precipitation,wind_speed_10m,weather_code",
+                "daily": "temperature_2m_min,temperature_2m_max,precipitation_sum,precipitation_probability_max,sunrise,sunset",
+            }, explain_errors=True,
+        )
+        if not isinstance(payload, dict):
+            raise UpstreamError(PROVIDER, "unexpected response shape")
+        hourly = payload.get("hourly") or {}
+        times = hourly.get("time") or []
+        used = [model for model in FORECAST_MODELS if any(f"temperature_2m_{model}" in hourly for _ in [0])]
+        failed = [model for model in FORECAST_MODELS if model not in used]
+        points = []
+        for index, time in enumerate(times[:hours]):
+            temps = _model_values(hourly, "temperature_2m", index)
+            rain = _model_values(hourly, "precipitation", index)
+            wind = _model_values(hourly, "wind_speed_10m", index)
+            points.append({
+                "time": time, "temperature_c": round(median(temps), 1) if temps else None,
+                "temperature_confidence": _confidence(temps, "temperature"),
+                "temperature_spread_c": round(max(temps) - min(temps), 1) if len(temps) >= 2 else None,
+                "precipitation_mm": round(median(rain), 1) if rain else None,
+                "precipitation_probability_pct": round(sum(value >= 0.1 for value in rain) / len(rain) * 100) if rain else None,
+                "precipitation_confidence": _confidence(rain, "precipitation"),
+                "wind_speed_kmh": round(median(wind), 1) if wind else None,
+                "wind_confidence": _confidence(wind, "wind"),
+                "weather_code": (hourly.get("weather_code") or [None])[index] if index < len(hourly.get("weather_code") or []) else None,
+            })
+        daily_block = payload.get("daily") or {}
+        daily = []
+        for index, date in enumerate((daily_block.get("time") or [])[:days]):
+            probability = (daily_block.get("precipitation_probability_max") or [])
+            daily.append({"date": date, "temp_min_c": (daily_block.get("temperature_2m_min") or [None])[index], "temp_max_c": (daily_block.get("temperature_2m_max") or [None])[index], "precipitation_sum_mm": (daily_block.get("precipitation_sum") or [None])[index], "precipitation_probability_pct": probability[index] if index < len(probability) else None, "confidence": "unknown", "sunrise": (daily_block.get("sunrise") or [None])[index], "sunset": (daily_block.get("sunset") or [None])[index]})
+        return {"latitude": payload.get("latitude"), "longitude": payload.get("longitude"), "timezone": payload.get("timezone"), "generated_at": datetime.now(UTC), "models_used": used, "models_failed": failed, "complete": not failed, "hourly": points, "daily": daily, "attribution": ATTRIBUTION}
+
+    return await cache.get_or_set(key, settings.cache_ttl_weather, _fetch)
 
 
 def _resolve_uv_index(payload: Dict[str, Any]) -> Optional[float]:
@@ -106,6 +223,10 @@ async def current(lat: float, lon: float) -> Dict[str, Any]:
                 "forecast_days": 1,
                 "timezone": "auto",
             },
+            # Open-Meteo needs no API key, so folding its own `reason` into the
+            # error is safe here, and it tells us whether a failure is bad
+            # parameters or an exhausted per-IP rate limit.
+            explain_errors=True,
         )
         if not isinstance(payload, dict):
             raise UpstreamError(PROVIDER, "unexpected response shape")
@@ -138,6 +259,7 @@ async def _rainfall_forecast(lat: float, lon: float) -> Dict[str, Any]:
                 "forecast_days": 7,
                 "timezone": "auto",
             },
+            explain_errors=True,
         )
         if not isinstance(payload, dict):
             raise UpstreamError(PROVIDER, "unexpected response shape")
@@ -188,10 +310,7 @@ async def flood_risk(lat: float, lon: float) -> Dict[str, Any]:
             daily.append({"date": day, "rain_mm": round(millimetres, 1)})
     else:
         complete = False
-        logger.warning(
-            "flood_risk: rainfall leg failed",
-            extra={"error": type(rainfall_result).__name__},
-        )
+        logger.warning("flood_risk: rainfall leg failed", extra=error_fields(rainfall_result))
 
     nearby_floods = 0
     if isinstance(events_result, list):
@@ -205,10 +324,7 @@ async def flood_risk(lat: float, lon: float) -> Dict[str, Any]:
                 nearby_floods += 1
     else:
         complete = False
-        logger.warning(
-            "flood_risk: GDACS leg failed",
-            extra={"error": type(events_result).__name__},
-        )
+        logger.warning("flood_risk: GDACS leg failed", extra=error_fields(events_result))
 
     if not complete and not daily:
         # Nothing usable came back. Say so instead of scoring zero risk, which

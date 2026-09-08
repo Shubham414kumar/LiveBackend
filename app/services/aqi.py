@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.core.cache import cache, cache_key, round_coord
 from app.core.config import settings
 from app.core.errors import ConfigurationMissingError, ValidationError
-from app.core.http import UpstreamError, get_client, get_json
+from app.core.http import UpstreamError, error_fields, get_client, get_json
 from app.core.logging import get_logger
 
 logger = get_logger(__name__)
@@ -423,24 +423,21 @@ async def location_intel(lat: float, lon: float) -> Dict[str, Any]:
         aqi_data = aqi_result
     else:
         unavailable.append("air quality")
-        logger.warning(
-            "location_intel: AQI leg failed",
-            extra={"error": type(aqi_result).__name__},
-        )
+        logger.warning("location_intel: AQI leg failed", extra=error_fields(aqi_result))
 
     weather_data: Optional[Dict[str, Any]] = None
     if isinstance(weather_result, dict):
         weather_data = weather_result.get("current") or {}
     else:
         unavailable.append("weather")
-        logger.warning(
-            "location_intel: weather leg failed",
-            extra={"error": type(weather_result).__name__},
-        )
+        logger.warning("location_intel: weather leg failed", extra=error_fields(weather_result))
 
     nearby: List[Dict[str, Any]] = ranking_result if isinstance(ranking_result, list) else []
     if not isinstance(ranking_result, list):
         unavailable.append("station ranking")
+        # This leg used to fail silently into `unavailable` with no log line at
+        # all, so a persistently broken ranking was invisible in production.
+        logger.warning("location_intel: ranking leg failed", extra=error_fields(ranking_result))
 
     rank: Optional[int] = None
     if nearby and aqi_data is not None:

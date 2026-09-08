@@ -42,7 +42,16 @@ _bearer = HTTPBearer(auto_error=False, description="Admin JWT from /api/admin/lo
 
 
 def hash_password(plaintext: str) -> str:
-    """Generate a bcrypt hash. Used by the `make admin-hash` helper script."""
+    """Generate a bcrypt hash for ``ADMIN_PASSWORD_HASH``.
+
+    Run from ``backend/``::
+
+        python -c "from app.core.admin_auth import hash_password; print(hash_password('pw'))"
+
+    Or without importing the app at all, which avoids loading settings::
+
+        python -c "import bcrypt; print(bcrypt.hashpw(b'pw', bcrypt.gensalt(rounds=12)).decode())"
+    """
     return bcrypt.hashpw(plaintext.encode("utf-8"), bcrypt.gensalt(rounds=12)).decode("utf-8")
 
 
